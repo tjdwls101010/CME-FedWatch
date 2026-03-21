@@ -17,6 +17,8 @@ The only open-source FedWatch that **actually works out of the box**. No data pr
 
 </div>
 
+![](https://github.com/tjdwls101010/DUMOK/blob/main/Images/gemini-3-pro-1774118610487bkbqf6t4i.png?raw=true)
+
 ---
 
 ## Why This Project?
