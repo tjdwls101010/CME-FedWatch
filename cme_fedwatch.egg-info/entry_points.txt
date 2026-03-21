@@ -1,0 +1,2 @@
+[console_scripts]
+cme-fedwatch = cme_fedwatch.cli:main

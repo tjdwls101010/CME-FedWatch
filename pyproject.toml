@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cme-fedwatch"
+version = "0.1.0"
+description = "CME FedWatch probability calculator — compute FOMC rate-change probabilities from Fed Funds Futures."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "curl_cffi>=0.6",
+]
+
+[project.scripts]
+cme-fedwatch = "cme_fedwatch.cli:main"
