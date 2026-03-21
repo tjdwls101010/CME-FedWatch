@@ -29,9 +29,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dumok-labs/cme-fedwatch"
-Repository = "https://github.com/dumok-labs/cme-fedwatch"
-Issues = "https://github.com/dumok-labs/cme-fedwatch/issues"
+Homepage = "https://github.com/tjdwls101010/CME-FedWatch"
+Repository = "https://github.com/tjdwls101010/CME-FedWatch"
+Issues = "https://github.com/tjdwls101010/CME-FedWatch/issues"
 
 [project.scripts]
 cme-fedwatch = "cme_fedwatch.cli:main"

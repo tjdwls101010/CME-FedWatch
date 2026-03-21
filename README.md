@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://logodownload.org/wp-content/uploads/2021/06/federal-reserve-logo-fed.png" width="140" alt="Federal Reserve">
+<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/Seal_of_the_United_States_Federal_Reserve_Board.svg/960px-Seal_of_the_United_States_Federal_Reserve_Board.svg.png" width="140" alt="Federal Reserve">
 
 # CME FedWatch Tracker
 
