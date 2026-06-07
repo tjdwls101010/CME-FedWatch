@@ -58,6 +58,37 @@ def get_upcoming_meetings(from_date: Optional[date] = None) -> list[date]:
     return [m for m in FOMC_MEETINGS if m >= from_date]
 
 
+# Upcoming-meeting count at or below this triggers the 'expiring' warning.
+_EXPIRING_THRESHOLD = 3
+
+
+def schedule_status(from_date: Optional[date] = None) -> dict:
+    """Report the health of the hardcoded FOMC schedule.
+
+    FOMC_MEETINGS is a finite, hand-maintained list, so it eventually runs
+    out. This surfaces how much runway is left, letting callers (and the CI
+    updater) react before meetings silently disappear from results.
+
+    Returns:
+        Dict with:
+            state: 'ok', 'expiring' (few meetings left), or 'expired' (none).
+            remaining: number of upcoming meetings still in the schedule.
+            last_known: ISO date of the last hardcoded meeting.
+    """
+    remaining = len(get_upcoming_meetings(from_date))
+    if remaining == 0:
+        state = "expired"
+    elif remaining <= _EXPIRING_THRESHOLD:
+        state = "expiring"
+    else:
+        state = "ok"
+    return {
+        "state": state,
+        "remaining": remaining,
+        "last_known": FOMC_MEETINGS[-1].isoformat(),
+    }
+
+
 def meeting_to_contract_code(meeting_date: date) -> str:
     """Map a meeting date to its Fed Funds Futures contract code.
 

@@ -118,6 +118,27 @@ def _print_csv_history(result: dict) -> None:
         writer.writerow(row)
 
 
+def _schedule_warning(status: Optional[dict]) -> Optional[str]:
+    """Return a warning line for a non-ok schedule, else None.
+
+    Pure: maps a schedule_status dict to a message so it can be tested
+    without capturing stderr. The CLI prints the result to stderr.
+    """
+    state = (status or {}).get("state")
+    if state == "expired":
+        return (
+            "⚠️  FOMC schedule has expired — no upcoming meetings in the "
+            "built-in list. Update cme_fedwatch/fomc.py (FOMC_MEETINGS)."
+        )
+    if state == "expiring":
+        return (
+            f"⚠️  FOMC schedule is running low: {status.get('remaining')} "
+            f"meeting(s) left (last: {status.get('last_known')}). "
+            "Update FOMC_MEETINGS soon."
+        )
+    return None
+
+
 def cmd_default(args: argparse.Namespace) -> None:
     from . import get_probabilities
 
@@ -132,6 +153,10 @@ def cmd_default(args: argparse.Namespace) -> None:
         _print_csv_meetings(result)
     else:
         _print_prob_table(result)
+
+    msg = _schedule_warning(result.get("schedule_status"))
+    if msg:
+        print(msg, file=sys.stderr)
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -148,6 +173,10 @@ def cmd_history(args: argparse.Namespace) -> None:
         _print_csv_history(result)
     else:
         _print_history_table(result)
+
+    msg = _schedule_warning(result.get("schedule_status"))
+    if msg:
+        print(msg, file=sys.stderr)
 
 
 def main(argv: Optional[list[str]] = None) -> None:

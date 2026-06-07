@@ -17,7 +17,7 @@ from typing import Optional
 
 from .api import fetch_effr, fetch_target_range, get_settlements
 from .calc import calculate
-from .fomc import FOMC_MEETINGS, get_upcoming_meetings
+from .fomc import FOMC_MEETINGS, get_upcoming_meetings, schedule_status
 
 __version__ = "0.1.1"
 
@@ -92,6 +92,7 @@ def get_probabilities(
     return {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
+        "schedule_status": schedule_status(),
         "meetings": meetings_out,
     }
 
@@ -192,6 +193,7 @@ def get_history(
 
     meetings_list = get_upcoming_meetings()
     empty = {"effr": current_rate, "current_target": _target_label(lower, upper),
+             "schedule_status": schedule_status(),
              "meeting_date": None, "contract": None, "history": [], "lookback": []}
     if not meetings_list:
         return empty
@@ -235,6 +237,7 @@ def get_history(
     return {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
+        "schedule_status": schedule_status(),
         "meeting_date": target,
         "contract": contract,
         "history": history,
