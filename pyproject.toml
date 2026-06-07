@@ -27,6 +27,9 @@ dependencies = [
     "curl_cffi>=0.6",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.urls]
 Homepage = "https://github.com/tjdwls101010/CME-FedWatch"
 Repository = "https://github.com/tjdwls101010/CME-FedWatch"
