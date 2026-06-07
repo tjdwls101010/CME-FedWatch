@@ -175,7 +175,9 @@ Get rate-change probabilities for FOMC meetings.
 | `trade_date` | `date` | Settlement date (default: most recent) |
 | `current_rate` | `float` | Override EFFR (default: fetched from FRED) |
 
-**Returns** a dict with `effr`, `current_target`, and `meetings` list.
+**Returns** a dict with `effr`, `current_target`, `schedule_status`, and a `meetings` list.
+
+`schedule_status` reports the health of the built-in FOMC schedule (hardcoded and finite): `{"state": "ok" | "expiring" | "expired", "remaining": <int>, "last_known": "<YYYY-MM-DD>"}`. The CLI prints a warning to stderr when the state is not `ok`, so a silently-expired schedule can't go unnoticed.
 
 ### `get_history(meeting=None, days=10, current_rate=None)`
 
@@ -187,7 +189,7 @@ Track how probabilities changed over recent business days, with standard lookbac
 | `days` | `int` | Requested business days of daily history (default: 10) |
 | `current_rate` | `float` | Override EFFR |
 
-**Returns** a dict with `history` (daily) and `lookback` snapshots.
+**Returns** a dict with `history` (daily), `lookback` snapshots, and the same `schedule_status` health field described above.
 
 > **Data availability.** CME's free settlement feed only retains roughly the last 5 business days. `history` therefore returns at most ~5 daily rows regardless of `days`, and a `lookback` entry (`1w`/`1m`/`3m`/`6m`/`1y`) appears only when settlement data for that date is still served — otherwise it is omitted, never fabricated. For full historical futures data, CME DataMine (paid) is the only official source.
 
