@@ -86,8 +86,9 @@ get_probabilities()
 # Specific meeting
 get_probabilities("2026-10-28")
 
-# How expectations changed over the past 10 business days
-# Includes 1d, 1w, 1m, 3m, 6m, 1y lookback comparisons
+# How expectations changed over recent business days.
+# Note: CME's free settlement feed only retains the last ~5 business days,
+# so longer lookbacks (1w/1m/3m/6m/1y) appear only when data is available.
 get_history("next", days=10)
 ```
 
@@ -124,25 +125,27 @@ EFFR: 3.64%  Target: 3.50%-3.75%
 ```
 
 ```bash
-# Historical: how expectations evolved
+# Historical: how expectations evolved over recent business days
 $ cme-fedwatch history --days 5
 
-EFFR: 3.64%  Target: 3.50%-3.75%
-Meeting: 2026-04-29  Contract: ZQJ6
+EFFR: 3.62%  Target: 3.50%-3.75%
+Meeting: 2026-06-17  Contract: ZQM6
 
-              3.50%-3.75%     3.75%-4.00%
------------------------------------------
-  2026-03-16       97.0%            3.0%
-  2026-03-17       97.0%            3.0%
-  2026-03-18      100.0%            0.0%
-  2026-03-19       93.0%            7.0%
-  2026-03-20       84.0%           16.0%
+                 3.25%-3.50%     3.50%-3.75%     3.75%-4.00%
+------------------------------------------------------------
+  2026-06-01            2.6%           97.4%            0.0%
+  2026-06-02            0.0%           97.9%            2.1%
+  2026-06-03            0.0%          100.0%            0.0%
+  2026-06-04            2.1%           97.9%            0.0%
+  2026-06-05            0.0%           97.9%            2.1%
 
 Lookback:
-          1d          84.0%           16.0%
-          1w          ...              ...
-          1m          ...              ...
+          1d            0.0%           97.9%            2.1%
 ```
+
+> Only the `1d` lookback appears above. CME's free settlement feed serves
+> roughly the last 5 business days, so older snapshots (`1w`/`1m`/`3m`/`6m`/`1y`)
+> are shown only when settlement data for that date is still available.
 
 ### All CLI Options
 
@@ -176,15 +179,17 @@ Get rate-change probabilities for FOMC meetings.
 
 ### `get_history(meeting=None, days=10, current_rate=None)`
 
-Track how probabilities changed over time with standard lookback periods (1d, 1w, 1m, 3m, 6m, 1y).
+Track how probabilities changed over recent business days, with standard lookback periods (1d, 1w, 1m, 3m, 6m, 1y) included when data is available.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `meeting` | `str` | `"next"` (default) or `"YYYY-MM-DD"` |
-| `days` | `int` | Business days of daily history (default: 10) |
+| `days` | `int` | Requested business days of daily history (default: 10) |
 | `current_rate` | `float` | Override EFFR |
 
-**Returns** a dict with `history` (daily) and `lookback` (1d/1w/1m/3m/6m/1y snapshots).
+**Returns** a dict with `history` (daily) and `lookback` snapshots.
+
+> **Data availability.** CME's free settlement feed only retains roughly the last 5 business days. `history` therefore returns at most ~5 daily rows regardless of `days`, and a `lookback` entry (`1w`/`1m`/`3m`/`6m`/`1y`) appears only when settlement data for that date is still served — otherwise it is omitted, never fabricated. For full historical futures data, CME DataMine (paid) is the only official source.
 
 ---
 
