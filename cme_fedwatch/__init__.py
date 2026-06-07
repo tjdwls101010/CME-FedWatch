@@ -19,7 +19,7 @@ from .api import fetch_effr, fetch_target_range, get_settlements
 from .calc import calculate
 from .fomc import FOMC_MEETINGS, get_upcoming_meetings
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def _target_label(lower: float, upper: float) -> str:

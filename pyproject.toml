@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cme-fedwatch"
-version = "0.1.0"
+version = "0.1.1"
 description = "Unofficial CME FedWatch — FOMC rate-change probabilities in one line of Python."
 readme = "README.md"
 license = "MIT"
