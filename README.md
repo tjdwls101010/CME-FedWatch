@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/Seal_of_the_United_States_Federal_Reserve_Board.svg/960px-Seal_of_the_United_States_Federal_Reserve_Board.svg.png" width="140" alt="Federal Reserve">
+<img src="https://github.com/tjdwls101010/tjdwls101010/blob/main/Images/CME%20Fedwatch.png?raw=true" width="240" alt="CME FedWatch">
 
 # CME FedWatch Tracker
 
@@ -16,8 +16,6 @@ The only open-source FedWatch that **actually works out of the box**. No data pr
 [Installation](#installation) · [Quick Start](#quick-start) · [CLI](#cli) · [API Reference](#api-reference) · [How It Works](#how-it-works)
 
 </div>
-
-![](https://github.com/tjdwls101010/DUMOK/blob/main/Images/gemini-3-pro-1774118610487bkbqf6t4i.png?raw=true)
 
 ---
 
