@@ -37,6 +37,8 @@ FOMC_MEETINGS: list[date] = [
     date(2027, 9, 15),
     date(2027, 10, 27),
     date(2027, 12, 8),
+    # 2028
+    date(2028, 1, 26),
 ]
 
 # Month code mapping for Fed Funds Futures (ZQ)

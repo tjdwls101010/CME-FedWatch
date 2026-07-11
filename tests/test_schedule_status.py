@@ -26,7 +26,7 @@ def test_status_expiring_when_few_meetings_remain():
 
 def test_status_expired_when_no_meetings_remain():
     # Past the last hardcoded meeting: the schedule has run out.
-    st = schedule_status(from_date=date(2028, 1, 1))
+    st = schedule_status(from_date=date(2028, 2, 1))
     assert st["state"] == "expired"
     assert st["remaining"] == 0
 
@@ -35,3 +35,7 @@ def test_status_surfaces_last_known_meeting():
     # The last hardcoded date is reported so a maintainer knows the horizon.
     st = schedule_status(from_date=date(2026, 6, 7))
     assert st["last_known"] == FOMC_MEETINGS[-1].isoformat()
+
+
+def test_includes_announced_january_2028_meeting():
+    assert FOMC_MEETINGS[-1] == date(2028, 1, 26)

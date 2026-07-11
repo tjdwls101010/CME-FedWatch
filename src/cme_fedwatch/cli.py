@@ -128,7 +128,7 @@ def _schedule_warning(status: Optional[dict]) -> Optional[str]:
     if state == "expired":
         return (
             "⚠️  FOMC schedule has expired — no upcoming meetings in the "
-            "built-in list. Update cme_fedwatch/fomc.py (FOMC_MEETINGS)."
+            "built-in list. Update src/cme_fedwatch/fomc.py (FOMC_MEETINGS)."
         )
     if state == "expiring":
         return (
