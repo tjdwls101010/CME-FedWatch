@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime
+import re
+from datetime import date
 from typing import Optional
+
+FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
 
 
 # FOMC meeting end dates (the day the decision is announced).
@@ -91,6 +94,18 @@ def schedule_status(from_date: Optional[date] = None) -> dict:
     }
 
 
+def schedule_horizon() -> date:
+    """Last meeting date the built-in schedule knows about.
+
+    The probability engine bootstraps from months that have no FOMC
+    meeting, so it must not look past this date: beyond it a month with no
+    listed meeting is indistinguishable from one whose meeting simply has
+    not been published yet, and treating it as an anchor would produce
+    confidently wrong probabilities instead of a visible gap.
+    """
+    return FOMC_MEETINGS[-1]
+
+
 def meeting_to_contract_code(meeting_date: date) -> str:
     """Map a meeting date to its Fed Funds Futures contract code.
 
@@ -116,3 +131,72 @@ def meeting_to_settlement_month(meeting_date: date) -> str:
 def days_in_month(d: date) -> int:
     """Return the total number of days in the month of the given date."""
     return calendar.monthrange(d.year, d.month)[1]
+
+
+_MONTH_NUMBERS = {name: n for n, name in enumerate(calendar.month_name) if name}
+_MONTH_NUMBERS.update({name: n for n, name in enumerate(calendar.month_abbr) if name})
+
+# The calendar page marks each meeting with two cells: a month (sometimes
+# spanning two, e.g. "Apr/May") and a day range whose LAST day is the
+# announcement date. Rows carrying a parenthetical note are not rate
+# decisions -- an August 2025 row reads "22 (notation vote)".
+_YEAR_HEADING = re.compile(r"(\d{4}) FOMC Meetings")
+_MEETING_ROW = re.compile(
+    r"fomc-meeting__month[^>]*>\s*<strong>([^<]+)</strong>"
+    r".{0,400}?fomc-meeting__date[^>]*>([^<]*)<",
+    re.S,
+)
+
+
+def parse_fomc_calendar(html: str) -> list[date]:
+    """Extract FOMC announcement dates from the Fed's calendar page HTML.
+
+    Kept separate from the fetch so it can be exercised against a saved
+    page. Raises ValueError if the page yields nothing, which is how a
+    layout change surfaces instead of silently returning an empty list.
+    """
+    meetings: set[date] = set()
+    headings = list(_YEAR_HEADING.finditer(html))
+    for i, heading in enumerate(headings):
+        year = int(heading.group(1))
+        stop = headings[i + 1].start() if i + 1 < len(headings) else len(html)
+        for month_cell, date_cell in _MEETING_ROW.findall(html[heading.end():stop]):
+            if "(" in date_cell:
+                continue
+            days = re.findall(r"\d+", date_cell)
+            if not days:
+                continue
+            day = int(days[-1])
+            names = [n for n in month_cell.replace(".", "").strip().split("/") if n]
+            try:
+                months = [_MONTH_NUMBERS[n] for n in names]
+            except KeyError:
+                continue
+            # A split-month row ends in the later month, which the day
+            # numbers reveal: "Apr/May 30-1" announces on May 1.
+            month = months[-1] if len(months) > 1 and day < int(days[0]) else months[0]
+            meetings.add(date(year + 1 if month < months[0] else year, month, day))
+
+    if not meetings:
+        raise ValueError(f"No FOMC meetings found in calendar page ({FOMC_CALENDAR_URL})")
+    return sorted(meetings)
+
+
+def fetch_fomc_schedule() -> list[date]:
+    """Fetch the FOMC schedule from federalreserve.gov, merged with the built-in list.
+
+    Opt-in: nothing in the normal probability path calls this, so the
+    package keeps working with no network beyond CME and FRED. The result
+    is the UNION of the page and ``FOMC_MEETINGS`` -- the Fed publishes
+    each year's calendar only once the prior year is under way, so the
+    built-in list can legitimately reach further out than the page does.
+
+    Raises whatever the request layer raises, or ValueError if the page
+    cannot be parsed. Falling back silently would hide exactly the layout
+    change this function exists to detect.
+    """
+    from curl_cffi import requests
+
+    resp = requests.Session(impersonate="chrome").get(FOMC_CALENDAR_URL)
+    resp.raise_for_status()
+    return sorted(set(parse_fomc_calendar(resp.text)) | set(FOMC_MEETINGS))

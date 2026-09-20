@@ -1,9 +1,9 @@
-"""CME Settlement API and NY Fed EFFR client."""
+"""CME Settlement API and FRED rate client."""
 
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from curl_cffi import requests
 
@@ -13,22 +13,42 @@ _CME_SETTLEMENTS_URL = (
     "/305/FUT"
 )
 
-_FRED_EFFR_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+_FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+
+# How far back to look for the newest settled trade date. CME answers 200
+# with `empty: true` for weekends, US market holidays and dates that have
+# not traded yet, and the caller's local date can be a day ahead of the US
+# trading date, so the walk has to clear a holiday-plus-weekend cluster
+# starting one day early.
+_LOOKBACK_DAYS = 10
 
 
-def _recent_business_day(d: date) -> date:
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
+class NoSettlementData(LookupError):
+    """CME served no settlement data for the requested trade date.
+
+    A subclass of LookupError so existing handlers keep working, but
+    distinct from it: KeyError is also a LookupError, so catching the base
+    class would swallow a malformed response as if the day simply had no
+    data.
+    """
+
+
+class SettlementSet(NamedTuple):
+    """Settlement rows together with the trade date they actually came from."""
+
+    trade_date: date
+    rows: list[dict]
 
 
 def _fetch_fred_series(series_id: str) -> float:
     """Fetch the latest value of a FRED series."""
     session = requests.Session(impersonate="chrome")
     end = date.today()
-    start = end - timedelta(days=10)
+    # Wide enough to clear a long holiday shutdown; the series is daily and
+    # the parse takes the last populated row regardless.
+    start = end - timedelta(days=30)
     resp = session.get(
-        _FRED_EFFR_URL,
+        _FRED_URL,
         params={"id": series_id, "cosd": start.isoformat(), "coed": end.isoformat()},
     )
     resp.raise_for_status()
@@ -48,61 +68,113 @@ def fetch_target_range() -> tuple[float, float]:
     """Fetch the current FOMC target rate range from FRED.
 
     Returns:
-        (lower, upper) in percentage points, e.g. (3.50, 3.75).
+        (lower, upper) in percentage points, e.g. (3.75, 4.00).
     """
-    lower = _fetch_fred_series("DFEDTARL")
-    upper = _fetch_fred_series("DFEDTARU")
-    return lower, upper
+    return _fetch_fred_series("DFEDTARL"), _fetch_fred_series("DFEDTARU")
 
 
-def fetch_settlements(trade_date: Optional[date] = None) -> dict:
-    """Fetch 30-Day Federal Funds Futures settlement data from CME.
-
-    Args:
-        trade_date: The trade date to query. Defaults to the most recent
-            business day.
-
-    Returns:
-        Raw JSON response dict from CME.
-    """
-    if trade_date is None:
-        trade_date = _recent_business_day(date.today() - timedelta(days=1))
-
-    date_str = trade_date.strftime("%m/%d/%Y")
+def _fetch_fred_history(series_id: str, start: date, end: date) -> dict[date, float]:
     session = requests.Session(impersonate="chrome")
-    resp = session.get(f"{_CME_SETTLEMENTS_URL}?tradeDate={date_str}")
+    resp = session.get(
+        _FRED_URL,
+        params={"id": series_id, "cosd": start.isoformat(), "coed": end.isoformat()},
+    )
     resp.raise_for_status()
-    data = resp.json()
-
-    if data.get("empty"):
-        prev = _recent_business_day(trade_date - timedelta(days=1))
-        date_str = prev.strftime("%m/%d/%Y")
-        resp = session.get(f"{_CME_SETTLEMENTS_URL}?tradeDate={date_str}")
-        resp.raise_for_status()
-        data = resp.json()
-
-    return data
+    out: dict[date, float] = {}
+    for line in resp.text.strip().split("\n")[1:]:
+        parts = line.split(",")
+        if len(parts) == 2 and parts[1] not in (".", ""):
+            out[date.fromisoformat(parts[0])] = float(parts[1])
+    return out
 
 
-def get_settlements(trade_date: Optional[date] = None) -> list[dict]:
+def fetch_target_range_history(start: date, end: date) -> dict[date, tuple[float, float]]:
+    """Fetch the FOMC target range in effect on each day of a date range.
+
+    A historical snapshot has to be labelled against the range that was in
+    effect when it traded, not today's. Both FRED series are daily and
+    carry every calendar day, so two requests cover the whole window.
+    """
+    lower = _fetch_fred_history("DFEDTARL", start, end)
+    upper = _fetch_fred_history("DFEDTARU", start, end)
+    return {d: (lower[d], upper[d]) for d in lower.keys() & upper.keys()}
+
+
+def fetch_settlements(trade_date: date) -> dict:
+    """Fetch the raw 30-Day Federal Funds Futures settlement response for one day."""
+    session = requests.Session(impersonate="chrome")
+    resp = session.get(
+        f"{_CME_SETTLEMENTS_URL}?tradeDate={trade_date.strftime('%m/%d/%Y')}"
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _has_data(payload: dict) -> bool:
+    return not payload.get("empty") and bool(payload.get("settlements"))
+
+
+def _parse(payload: dict) -> list[dict]:
     """Return parsed settlement prices.
 
-    Returns:
-        List of dicts with keys: month, settle, volume, open_interest.
+    Rows with a non-numeric settle (and the 'Total' summary row) are
+    skipped; they carry no price to imply a rate from.
     """
-    data = fetch_settlements(trade_date)
-    results = []
-    for s in data["settlements"]:
+    rows = []
+    for s in payload["settlements"]:
         if s["month"] == "Total":
             continue
         try:
             settle = float(s["settle"])
         except (ValueError, TypeError):
             continue
-        results.append({
+        rows.append({
             "month": s["month"],
             "settle": settle,
-            "volume": s.get("volume", "0").replace(",", ""),
-            "open_interest": s.get("openInterest", "0").replace(",", ""),
+            "volume": _as_int(s.get("volume")),
+            "open_interest": _as_int(s.get("openInterest")),
         })
-    return results
+    return rows
+
+
+def _as_int(value: Optional[str]) -> int:
+    try:
+        return int(str(value or "0").replace(",", ""))
+    except ValueError:
+        return 0
+
+
+def get_settlements(trade_date: Optional[date] = None) -> SettlementSet:
+    """Return settlement prices and the trade date they came from.
+
+    Args:
+        trade_date: An exact trade date. If CME does not serve that day,
+            this raises rather than substituting a neighbouring day -- the
+            caller asked for a specific day's numbers. Defaults to None,
+            which walks back from today to the newest day CME does serve.
+
+    Raises:
+        LookupError: No settlement data within the lookback window. CME's
+            free feed keeps only about the last five business days, so this
+            is the expected outcome for any older date.
+    """
+    if trade_date is not None:
+        payload = fetch_settlements(trade_date)
+        if not _has_data(payload):
+            raise NoSettlementData(
+                f"CME served no settlement data for {trade_date.isoformat()}. "
+                "The free feed retains roughly the last 5 business days."
+            )
+        return SettlementSet(trade_date, _parse(payload))
+
+    day = date.today()
+    for _ in range(_LOOKBACK_DAYS):
+        if day.weekday() < 5:
+            payload = fetch_settlements(day)
+            if _has_data(payload):
+                return SettlementSet(day, _parse(payload))
+        day -= timedelta(days=1)
+
+    raise NoSettlementData(
+        f"No CME settlement data in the {_LOOKBACK_DAYS} days to {date.today().isoformat()}."
+    )
