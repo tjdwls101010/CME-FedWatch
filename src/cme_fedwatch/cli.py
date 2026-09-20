@@ -14,11 +14,20 @@ def _parse_date(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
 
 
+def _rate_order(label: str) -> float:
+    """Sort key for a range label: its lower bound as a number.
+
+    Sorting the labels as text puts '10.00%-10.25%' before '9.50%-9.75%',
+    which would shuffle the table's columns once rates reach double digits.
+    """
+    return float(label.split("%")[0])
+
+
 def _collect_all_rates(meetings: list[dict]) -> list[str]:
     rates = set()
     for m in meetings:
         rates.update(m["probabilities"].keys())
-    return sorted(rates)
+    return sorted(rates, key=_rate_order)
 
 
 def _print_prob_table(result: dict) -> None:
@@ -80,7 +89,7 @@ def _collect_all_rates_from_history(history: list[dict]) -> list[str]:
     rates = set()
     for h in history:
         rates.update(h["probabilities"].keys())
-    return sorted(rates)
+    return sorted(rates, key=_rate_order)
 
 
 def _print_csv_meetings(result: dict) -> None:
