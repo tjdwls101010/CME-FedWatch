@@ -30,7 +30,7 @@ from .fomc import (
     schedule_status,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # CME's free settlement feed retains roughly the last five business days, so
 # a longer history is truncated rather than fetched. Stopping after this many
@@ -210,7 +210,17 @@ def get_history(
 
         lower, upper = current_target_range(current_rate)
 
-    meetings_list = get_upcoming_meetings()
+    # Anchor on the newest settlement CME actually serves rather than the
+    # local calendar. The two disagree for the hours either side of a date
+    # rollover in a non-US timezone, and picking a meeting the reported
+    # settlements had not reached would mislabel the whole table. It also
+    # starts the walk on a day that is known to have data.
+    try:
+        latest = get_settlements()
+    except NoSettlementData:
+        latest = None
+    as_of = latest.trade_date if latest else date.today()
+    meetings_list = get_upcoming_meetings(as_of)
     result = {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
@@ -233,15 +243,14 @@ def get_history(
     # Each snapshot is labelled with the target range that was in effect on
     # its own trade date. Using today's range would turn a policy change
     # inside the window into a fake 25bp repricing across every row.
-    today = date.today()
-    window_start = today - timedelta(days=days * 2 + _MAX_LEADING_MISSES + 7)
+    window_start = as_of - timedelta(days=days * 2 + _MAX_LEADING_MISSES + 7)
     try:
-        ranges = fetch_target_range_history(window_start, today)
+        ranges = fetch_target_range_history(window_start, as_of)
     except Exception:
         ranges = {}
 
     history = []
-    day = today
+    day = as_of
     misses = 0
     while len(history) < days:
         if misses >= (_MAX_CONSECUTIVE_MISSES if history else _MAX_LEADING_MISSES):

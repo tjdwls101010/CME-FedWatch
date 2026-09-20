@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from typing import NamedTuple, Optional
 
@@ -117,8 +118,10 @@ def _has_data(payload: dict) -> bool:
 def _parse(payload: dict) -> list[dict]:
     """Return parsed settlement prices.
 
-    Rows with a non-numeric settle (and the 'Total' summary row) are
-    skipped; they carry no price to imply a rate from.
+    Rows without a usable settle (and the 'Total' summary row) are
+    skipped; they carry no price to imply a rate from. NaN and Infinity
+    parse as floats but would spread silently through every rate derived
+    from them, so they are treated as missing too.
     """
     rows = []
     for s in payload["settlements"]:
@@ -127,6 +130,8 @@ def _parse(payload: dict) -> list[dict]:
         try:
             settle = float(s["settle"])
         except (ValueError, TypeError):
+            continue
+        if not math.isfinite(settle):
             continue
         rows.append({
             "month": s["month"],
