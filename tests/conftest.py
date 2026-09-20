@@ -43,7 +43,7 @@ def offline(monkeypatch, settlements_20260918):
     fomc and the label conversion all run for real.
     """
     import cme_fedwatch
-    from cme_fedwatch.api import SettlementSet
+    from cme_fedwatch.api import NoSettlementData, SettlementSet
 
     monkeypatch.setattr(
         cme_fedwatch,
@@ -52,3 +52,63 @@ def offline(monkeypatch, settlements_20260918):
     )
     monkeypatch.setattr(cme_fedwatch, "fetch_target_range", lambda: TARGET_RANGE_20260918)
     monkeypatch.setattr(cme_fedwatch, "fetch_effr", lambda: EFFR_20260918)
+    monkeypatch.setattr(
+        cme_fedwatch,
+        "fetch_target_range_history",
+        lambda start, end: {TRADE_DATE_20260918: TARGET_RANGE_20260918},
+    )
+
+
+@pytest.fixture
+def history_offline(monkeypatch):
+    """Serve the 2026-09-14..18 settlement week and that week's FRED ranges.
+
+    The walk starts from 2026-09-19, a Friday, so the five business days
+    the fixture holds are exactly what CME still served on 2026-09-20.
+    """
+    import cme_fedwatch
+    from cme_fedwatch import api
+    from cme_fedwatch.api import NoSettlementData, SettlementSet
+
+    served = {}
+    for day in range(14, 19):
+        with (FIXTURES / f"settlements_202609{day}.json").open() as fh:
+            served[date(2026, 9, day)] = api._parse(json.load(fh))
+
+    def _get_settlements(trade_date=None):
+        if trade_date is None:
+            trade_date = max(served)
+        if trade_date not in served:
+            raise NoSettlementData(f"no settlement data for {trade_date.isoformat()}")
+        return SettlementSet(trade_date, served[trade_date])
+
+    # DFEDTARL / DFEDTARU as FRED served them for September 2026.
+    with (FIXTURES / "fred_target_range_202609.json").open() as fh:
+        csv_by_series = json.load(fh)
+
+    def _parse_csv(text):
+        out = {}
+        for line in text.strip().split("\n")[1:]:
+            day, value = line.split(",")
+            if value not in (".", ""):
+                out[date.fromisoformat(day)] = float(value)
+        return out
+
+    lower = _parse_csv(csv_by_series["DFEDTARL"])
+    upper = _parse_csv(csv_by_series["DFEDTARU"])
+
+    monkeypatch.setattr(cme_fedwatch, "get_settlements", _get_settlements)
+    monkeypatch.setattr(cme_fedwatch, "fetch_effr", lambda: EFFR_20260918)
+    monkeypatch.setattr(cme_fedwatch, "fetch_target_range", lambda: TARGET_RANGE_20260918)
+    monkeypatch.setattr(
+        cme_fedwatch,
+        "fetch_target_range_history",
+        lambda start, end: {d: (lower[d], upper[d]) for d in lower.keys() & upper.keys()},
+    )
+
+    class _Date(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 9, 19)
+
+    monkeypatch.setattr(cme_fedwatch, "date", _Date)

@@ -35,10 +35,7 @@ import math
 from datetime import date
 from typing import Optional
 
-from .fomc import _MONTH_NAMES, days_in_month, meeting_to_contract_code
-
-# Outcomes below this probability are dropped rather than printed as 0.0%.
-_PRUNE = 0.0005
+from .fomc import FOMC_MEETINGS, _MONTH_NAMES, days_in_month, meeting_to_contract_code
 
 _STEP = 0.25
 
@@ -109,42 +106,56 @@ def _solve_rate_curve(
         if nxt in meeting_months:
             start.setdefault(nxt, a)
 
-    # Propagate in reverse chronological order, repeating until the chain
-    # stops growing: each solved month pins the end of the month before it,
-    # so consecutive meeting months resolve one per pass.
+    # Propagate until the chain stops growing. Backward solving runs first
+    # in each pass because CME gives it precedence: an anchor populates the
+    # preceding month's end rate and calculations then proceed in reverse
+    # chronological order. Forward solving fills what backward could not
+    # reach, and both directions hand their result to the neighbouring
+    # meeting month -- a rate solved either way is the next meeting's start
+    # rate, so a single missing contract does not end the chain.
     changed = True
     while changed:
         changed = False
+
         for ym in reversed(months):
             if ym not in meeting_months or ym in start:
                 continue
             a = avg(ym)
-            if a is None or ym not in end:
+            if a is None:
                 continue
             meeting = meeting_months[ym]
             D = days_in_month(meeting)
             N, M = meeting.day, D - meeting.day
-            start[ym] = (D * a - M * end[ym]) / N
+            if M == 0:
+                # The meeting is on the last day, so the contract averages
+                # the pre-meeting rate alone and no end rate is needed.
+                start[ym] = a
+            elif ym in end:
+                start[ym] = (D * a - M * end[ym]) / N
+            else:
+                continue
             prev = _prev_month(*ym)
             if prev in meeting_months:
                 end.setdefault(prev, start[ym])
             changed = True
 
-    # A meeting month whose start came from a preceding anchor can have its
-    # end recovered the other way round. M == 0 (meeting on the last day of
-    # the month) leaves the post-meeting rate unpriced by this contract.
-    for ym in months:
-        if ym not in meeting_months or ym in end or ym not in start:
-            continue
-        a = avg(ym)
-        if a is None:
-            continue
-        meeting = meeting_months[ym]
-        D = days_in_month(meeting)
-        N, M = meeting.day, D - meeting.day
-        if M == 0:
-            continue
-        end[ym] = (D * a - N * start[ym]) / M
+        for ym in months:
+            if ym not in meeting_months or ym in end or ym not in start:
+                continue
+            a = avg(ym)
+            if a is None:
+                continue
+            meeting = meeting_months[ym]
+            D = days_in_month(meeting)
+            N, M = meeting.day, D - meeting.day
+            if M == 0:
+                # Not priced by this contract; it has to come from an anchor.
+                continue
+            end[ym] = (D * a - N * start[ym]) / M
+            nxt = _next_month(*ym)
+            if nxt in meeting_months:
+                start.setdefault(nxt, end[ym])
+            changed = True
 
     return start, end
 
@@ -158,11 +169,22 @@ def _step_distribution(start_rate: float, end_rate: float) -> dict[int, float]:
 
 
 def _convolve(cumulative: dict[int, float], step: dict[int, float]) -> dict[int, float]:
+    """Combine a meeting's step distribution into the cumulative one.
+
+    Nothing is pruned here. Branches too small to display individually
+    still add up: eight meetings each pricing a 0.04% hike carry 0.3%
+    between them, and dropping them per convolution loses that for good.
+    Thinning happens once, on the displayed result.
+    """
     out: dict[int, float] = {}
     for moves_so_far, p in cumulative.items():
         for moves, q in step.items():
             out[moves_so_far + moves] = out.get(moves_so_far + moves, 0.0) + p * q
-    return {c: p for c, p in out.items() if p > _PRUNE}
+    return out
+
+
+def _range_label(lower_bps: int, upper_bps: int) -> str:
+    return f"{lower_bps / 100:.2f}%-{upper_bps / 100:.2f}%"
 
 
 def calculate(
@@ -170,19 +192,26 @@ def calculate(
     meetings: list[date],
     current_range: tuple[float, float],
     horizon: Optional[date] = None,
+    schedule: Optional[list[date]] = None,
 ) -> list[dict]:
     """Calculate FedWatch probabilities for each FOMC meeting.
 
     Args:
         settlements: Settlement dicts with 'month' and 'settle'.
-        meetings: Upcoming FOMC meeting dates, chronological.
+        meetings: FOMC meeting dates to report, chronological.
         current_range: Current target range in percent, e.g. (3.75, 4.00).
         horizon: Last date the meeting schedule is known to be complete.
             Months beyond it are excluded from anchor detection.
+        schedule: Every meeting date the anchor search should know about,
+            past ones included. Anchors are months with no meeting, and
+            `meetings` holds only the ones still ahead -- classifying from
+            that alone would read the month of a meeting that has already
+            happened as an anchor and reintroduce the very error this
+            engine exists to avoid. Defaults to the built-in schedule.
 
     Returns:
         One dict per meeting with 'date', 'contract' and 'probabilities'
-        keyed by basis-point range label (e.g. '375-400'). Meetings whose
+        keyed by target range label (e.g. '3.75%-4.00%'). Meetings whose
         rates could not be bootstrapped are omitted.
     """
     if not meetings:
@@ -193,10 +222,15 @@ def calculate(
     # 성진: 한 달에 FOMC가 두 번 있으면 이 맵이 하나를 덮어쓴다. 현대 일정에는
     # 없어서 지원하지 않는다 — 등장하면 앵커 연쇄를 월 단위가 아니라 회의 단위로
     # 다시 써야 한다.
-    meeting_months = {(m.year, m.month): m for m in meetings}
+    known = FOMC_MEETINGS if schedule is None else schedule
+    meeting_months = {(m.year, m.month): m for m in known}
+    meeting_months.update({(m.year, m.month): m for m in meetings})
 
+    # One month either side of the meeting span: the month before the first
+    # meeting can be the anchor that pins its start rate, and the month
+    # after the last one can be the anchor that pins its end rate.
     months = []
-    ym = (meetings[0].year, meetings[0].month)
+    ym = _prev_month(meetings[0].year, meetings[0].month)
     last = _next_month(meetings[-1].year, meetings[-1].month)
     while ym <= last:
         months.append(ym)
@@ -218,11 +252,9 @@ def calculate(
             break
         cumulative = _convolve(cumulative, _step_distribution(start[ym], end[ym]))
         probabilities = {
-            f"{lower_bps + 25 * c}-{upper_bps + 25 * c}": round(p * 100, 1)
+            _range_label(lower_bps + 25 * c, upper_bps + 25 * c): round(p * 100, 1)
             for c, p in sorted(cumulative.items())
-            # A negative target range is not a Fed outcome; it would also
-            # make the bps label ambiguous to split on '-'.
-            if round(p * 100, 1) > 0.0 and lower_bps + 25 * c >= 0
+            if round(p * 100, 1) > 0.0
         }
         results.append({
             "date": meeting.isoformat(),

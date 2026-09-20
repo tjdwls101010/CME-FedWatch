@@ -8,3 +8,4 @@ build/
 .pytest_cache/
 .ultra-search/
 .claude/
+.codex-runs/

@@ -132,7 +132,8 @@ def cmd_default(args: argparse.Namespace) -> None:
     from . import get_probabilities
 
     meeting = getattr(args, "meeting", None)
-    trade_date = _parse_date(args.date) if args.date else None
+    date_str = getattr(args, "date", None)
+    trade_date = _parse_date(date_str) if date_str else None
     rate = getattr(args, "rate", None)
     try:
         result = get_probabilities(meeting=meeting, trade_date=trade_date, current_rate=rate)
@@ -140,12 +141,28 @@ def cmd_default(args: argparse.Namespace) -> None:
         print(f"⚠️  {exc}", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.json:
+    if meeting not in (None, "next") and not result["meetings"]:
+        priced = ", ".join(m["date"] for m in get_probabilities()["meetings"]) or "none"
+        print(
+            f"⚠️  {meeting} is not among the meetings this settlement prices. "
+            f"Available: {priced}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
-    elif args.csv:
+    elif getattr(args, "csv", False):
         _print_csv_meetings(result)
     else:
         _print_prob_table(result)
+
+    if result.get("target_source") == "estimated":
+        print(
+            "⚠️  FRED's target-range series was unavailable; the range shown is "
+            "estimated from the EFFR and may be one 25bp step off.",
+            file=sys.stderr,
+        )
 
     msg = _schedule_warning(result.get("schedule_status"))
     if msg:
@@ -155,14 +172,22 @@ def cmd_default(args: argparse.Namespace) -> None:
 def cmd_history(args: argparse.Namespace) -> None:
     from . import get_history
 
+    if getattr(args, "date", None):
+        print(
+            "⚠️  history does not take --date; it always walks back from today. "
+            "Use --days to choose how far.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     meeting = getattr(args, "meeting", None) or "next"
-    days = getattr(args, "days", 10)
+    days = getattr(args, "days", None) or 10
     rate = getattr(args, "rate", None)
     result = get_history(meeting=meeting, days=days, current_rate=rate)
 
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
-    elif args.csv:
+    elif getattr(args, "csv", False):
         _print_csv_history(result)
     else:
         _print_history_table(result)
@@ -175,8 +200,16 @@ def cmd_history(args: argparse.Namespace) -> None:
         print(msg, file=sys.stderr)
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parent = argparse.ArgumentParser(add_help=False)
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser.
+
+    Global options are suppressed rather than defaulted, because argparse
+    re-registers a parent's options on every subparser and a plain default
+    there silently overwrites a value given before the subcommand --
+    `cme-fedwatch --json next` would print a table. Callers read them with
+    getattr and supply the default themselves.
+    """
+    parent = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     parent.add_argument("--json", action="store_true", help="JSON output")
     parent.add_argument("--csv", action="store_true", help="CSV output")
     parent.add_argument("--date", help="Trade date (YYYY-MM-DD)")
@@ -194,20 +227,24 @@ def main(argv: Optional[list[str]] = None) -> None:
     sub.add_parser("next", help="Next meeting only", parents=[parent])
 
     hist = sub.add_parser("history", help="Probability changes over time", parents=[parent])
-    hist.add_argument("--days", type=int, default=10, help="Business days (default: 10)")
+    hist.add_argument("--days", type=int, help="Business days (default: 10)")
+    return parser
 
-    args = parser.parse_args(argv)
 
-    if args.command == "all":
+def main(argv: Optional[list[str]] = None) -> None:
+    args = build_parser().parse_args(argv)
+
+    command = getattr(args, "command", None)
+    if command == "all":
         args.meeting = None
         cmd_default(args)
-    elif args.command == "next":
+    elif command == "next":
         args.meeting = "next"
         cmd_default(args)
-    elif args.command == "history":
+    elif command == "history":
         cmd_history(args)
     else:
-        if not args.meeting:
+        if not getattr(args, "meeting", None):
             args.meeting = "next"
         cmd_default(args)
 

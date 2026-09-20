@@ -14,7 +14,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional
 
-from .api import fetch_effr, fetch_target_range, get_settlements
+from .api import (
+    NoSettlementData,
+    fetch_effr,
+    fetch_target_range,
+    fetch_target_range_history,
+    get_settlements,
+)
 from .calc import calculate
 from .fomc import (
     FOMC_MEETINGS,
@@ -32,29 +38,46 @@ __version__ = "0.2.0"
 # still stepping over a holiday sitting inside it.
 _MAX_CONSECUTIVE_MISSES = 3
 
+# Before the first hit the walk is at the leading edge, where today may not
+# have settled yet and a holiday cluster can sit on top of that. Misses are
+# counted from the very first day regardless: counting them only after a hit
+# meant a window that served nothing -- an outage, or a meeting date that is
+# not on the schedule -- walked backwards until the date type overflowed.
+_MAX_LEADING_MISSES = 5
+
 
 def _target_label(lower: float, upper: float) -> str:
     return f"{lower:.2f}%-{upper:.2f}%"
 
 
-def _current_range(current_rate: float) -> tuple[float, float]:
+def _range_on(day: date, ranges: dict, fallback: tuple[float, float]) -> tuple[float, float]:
+    """Target range in effect on a day, carrying the last known value forward."""
+    known = [d for d in ranges if d <= day]
+    return ranges[max(known)] if known else fallback
+
+
+def _range_for(trade_date: date) -> tuple[tuple[float, float], str]:
+    """Target range in effect on a trade date, and where it came from.
+
+    Labels are anchored to the range that was in effect when the
+    settlement traded, so an older --date is not described in today's
+    terms. Returns the source alongside it because the fallback is an
+    estimate and must not be presented as published data.
+    """
     try:
-        return fetch_target_range()
+        ranges = fetch_target_range_history(trade_date - timedelta(days=14), trade_date)
+        if ranges:
+            return _range_on(trade_date, ranges, (0.0, 0.0)), "fred"
     except Exception:
-        # FRED's target-range series is unavailable; the EFFR always trades
-        # inside the band, so flooring it recovers the same range.
-        from .calc import current_target_range
+        pass
 
-        return current_target_range(current_rate)
+    # FRED is unavailable. Flooring the EFFR usually recovers the band, but
+    # not always: in September 2019 the EFFR printed above the target
+    # ceiling, and in other stretches it has sat exactly on it, where
+    # flooring lands a whole step high. Say that it is an estimate.
+    from .calc import current_target_range
 
-
-def _to_percent_labels(probs: dict) -> dict:
-    """Convert bps labels (e.g. '375-400') to percentage labels."""
-    out = {}
-    for label, value in probs.items():
-        lo, hi = label.split("-")
-        out[f"{int(lo) / 100:.2f}%-{int(hi) / 100:.2f}%"] = value
-    return out
+    return current_target_range(fetch_effr()), "estimated"
 
 
 def get_probabilities(
@@ -93,24 +116,16 @@ def get_probabilities(
     Raises:
         LookupError: CME served no settlement data for the requested date.
     """
+    settlements = get_settlements(trade_date)
+    (lower, upper), target_source = _range_for(settlements.trade_date)
     if current_rate is None:
         current_rate = fetch_effr()
-    lower, upper = _current_range(current_rate)
-
-    settlements = get_settlements(trade_date)
     # Meetings are those upcoming as of the settlement, not as of the local
     # clock, so an explicit --date reports the meetings that day was pricing.
     meetings_list = get_upcoming_meetings(settlements.trade_date)
     raw = calculate(settlements.rows, meetings_list, (lower, upper), schedule_horizon())
 
-    meetings_out = [
-        {
-            "date": r["date"],
-            "contract": r["contract"],
-            "probabilities": _to_percent_labels(r["probabilities"]),
-        }
-        for r in raw
-    ]
+    meetings_out = list(raw)
 
     if meeting == "next":
         meetings_out = meetings_out[:1]
@@ -120,6 +135,7 @@ def get_probabilities(
     return {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
+        "target_source": target_source,
         "trade_date": settlements.trade_date.isoformat(),
         "schedule_status": schedule_status(),
         "meetings": meetings_out,
@@ -138,7 +154,7 @@ def _snapshot(
     """
     try:
         settlements = get_settlements(trade_date)
-    except LookupError:
+    except NoSettlementData:
         return None
 
     meetings_list = get_upcoming_meetings(settlements.trade_date)
@@ -146,7 +162,7 @@ def _snapshot(
         if r["date"] == target_meeting:
             return {
                 "trade_date": trade_date.isoformat(),
-                "probabilities": _to_percent_labels(r["probabilities"]),
+                "probabilities": r["probabilities"],
             }
     return None
 
@@ -187,7 +203,12 @@ def get_history(
     """
     if current_rate is None:
         current_rate = fetch_effr()
-    lower, upper = _current_range(current_rate)
+    try:
+        lower, upper = fetch_target_range()
+    except Exception:
+        from .calc import current_target_range
+
+        lower, upper = current_target_range(current_rate)
 
     meetings_list = get_upcoming_meetings()
     result = {
@@ -209,16 +230,28 @@ def get_history(
         else meeting
     )
 
+    # Each snapshot is labelled with the target range that was in effect on
+    # its own trade date. Using today's range would turn a policy change
+    # inside the window into a fake 25bp repricing across every row.
+    today = date.today()
+    window_start = today - timedelta(days=days * 2 + _MAX_LEADING_MISSES + 7)
+    try:
+        ranges = fetch_target_range_history(window_start, today)
+    except Exception:
+        ranges = {}
+
     history = []
-    day = date.today()
+    day = today
     misses = 0
-    while len(history) < days and misses < _MAX_CONSECUTIVE_MISSES:
+    while len(history) < days:
+        if misses >= (_MAX_CONSECUTIVE_MISSES if history else _MAX_LEADING_MISSES):
+            break
         if day.weekday() < 5:
-            snap = _snapshot(day, target, (lower, upper))
+            snap = _snapshot(day, target, _range_on(day, ranges, (lower, upper)))
             if snap:
                 history.append(snap)
                 misses = 0
-            elif history:
+            else:
                 misses += 1
         day -= timedelta(days=1)
     history.reverse()

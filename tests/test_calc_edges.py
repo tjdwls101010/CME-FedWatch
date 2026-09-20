@@ -20,15 +20,20 @@ def _curve(**months) -> list[dict]:
     return [{"month": k, "settle": 100.0 - v} for k, v in months.items()]
 
 
-def test_schedule_horizon_drops_meetings_instead_of_guessing(settlements_20260918):
-    # Pulling the horizon back to December 2026 removes February 2027 as an
-    # anchor candidate, which is what January 2027's chain depends on.
-    meetings = [date(2026, 10, 28), date(2026, 12, 9), date(2027, 1, 27)]
-    out = calculate(settlements_20260918, meetings, TARGET, horizon=date(2026, 12, 9))
+def test_a_month_past_the_schedule_horizon_is_not_treated_as_an_anchor(settlements_20260918):
+    # October 2026's chain hangs entirely on November being a no-meeting
+    # month. Past the horizon that is unknowable -- an unpublished meeting
+    # looks exactly like no meeting -- so the engine must drop the meeting
+    # rather than answer from a guess.
+    meetings = [date(2026, 10, 28)]
+    assert calculate(settlements_20260918, meetings, TARGET, horizon=date(2026, 10, 28)) == []
 
-    assert [r["date"] for r in out] == ["2026-10-28", "2026-12-09"]
-    # The meetings that a valid anchor does reach are unaffected.
-    assert out[0]["probabilities"] == pytest.approx({"375-400": 42.4, "400-425": 57.6}, abs=0.1)
+    # One month further out, November is inside the known schedule and the
+    # same curve resolves.
+    out = calculate(settlements_20260918, meetings, TARGET, horizon=date(2026, 11, 30))
+    assert out[0]["probabilities"] == pytest.approx(
+        {"3.75%-4.00%": 42.4, "4.00%-4.25%": 57.6}, abs=0.1
+    )
 
 
 def test_a_cut_is_labelled_below_the_current_range():
@@ -40,10 +45,11 @@ def test_a_cut_is_labelled_below_the_current_range():
         _curve(**{"OCT 26": 3.857742, "NOV 26": 3.65}),
         [date(2026, 10, 28)],
         TARGET,
+        schedule=[date(2026, 10, 28)],
     )
     probs = out[0]["probabilities"]
-    assert max(probs, key=probs.get) == "350-375"
-    assert probs["350-375"] == pytest.approx(92.0, abs=0.1)
+    assert max(probs, key=probs.get) == "3.50%-3.75%"
+    assert probs["3.50%-3.75%"] == pytest.approx(92.0, abs=0.1)
 
 
 def test_meeting_on_the_last_day_of_the_month_is_dropped_not_divided_by_zero():
@@ -56,6 +62,7 @@ def test_meeting_on_the_last_day_of_the_month_is_dropped_not_divided_by_zero():
         _curve(**{"OCT 26": 3.88, "NOV 26": 3.90, "DEC 26": 4.1650}),
         [date(2026, 11, 30), date(2026, 12, 9)],
         TARGET,
+        schedule=[date(2026, 11, 30), date(2026, 12, 9)],
     )
     assert out == []
 

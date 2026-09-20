@@ -23,6 +23,16 @@ _FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 _LOOKBACK_DAYS = 10
 
 
+class NoSettlementData(LookupError):
+    """CME served no settlement data for the requested trade date.
+
+    A subclass of LookupError so existing handlers keep working, but
+    distinct from it: KeyError is also a LookupError, so catching the base
+    class would swallow a malformed response as if the day simply had no
+    data.
+    """
+
+
 class SettlementSet(NamedTuple):
     """Settlement rows together with the trade date they actually came from."""
 
@@ -61,6 +71,33 @@ def fetch_target_range() -> tuple[float, float]:
         (lower, upper) in percentage points, e.g. (3.75, 4.00).
     """
     return _fetch_fred_series("DFEDTARL"), _fetch_fred_series("DFEDTARU")
+
+
+def _fetch_fred_history(series_id: str, start: date, end: date) -> dict[date, float]:
+    session = requests.Session(impersonate="chrome")
+    resp = session.get(
+        _FRED_URL,
+        params={"id": series_id, "cosd": start.isoformat(), "coed": end.isoformat()},
+    )
+    resp.raise_for_status()
+    out: dict[date, float] = {}
+    for line in resp.text.strip().split("\n")[1:]:
+        parts = line.split(",")
+        if len(parts) == 2 and parts[1] not in (".", ""):
+            out[date.fromisoformat(parts[0])] = float(parts[1])
+    return out
+
+
+def fetch_target_range_history(start: date, end: date) -> dict[date, tuple[float, float]]:
+    """Fetch the FOMC target range in effect on each day of a date range.
+
+    A historical snapshot has to be labelled against the range that was in
+    effect when it traded, not today's. Both FRED series are daily and
+    carry every calendar day, so two requests cover the whole window.
+    """
+    lower = _fetch_fred_history("DFEDTARL", start, end)
+    upper = _fetch_fred_history("DFEDTARU", start, end)
+    return {d: (lower[d], upper[d]) for d in lower.keys() & upper.keys()}
 
 
 def fetch_settlements(trade_date: date) -> dict:
@@ -124,7 +161,7 @@ def get_settlements(trade_date: Optional[date] = None) -> SettlementSet:
     if trade_date is not None:
         payload = fetch_settlements(trade_date)
         if not _has_data(payload):
-            raise LookupError(
+            raise NoSettlementData(
                 f"CME served no settlement data for {trade_date.isoformat()}. "
                 "The free feed retains roughly the last 5 business days."
             )
@@ -138,6 +175,6 @@ def get_settlements(trade_date: Optional[date] = None) -> SettlementSet:
                 return SettlementSet(day, _parse(payload))
         day -= timedelta(days=1)
 
-    raise LookupError(
+    raise NoSettlementData(
         f"No CME settlement data in the {_LOOKBACK_DAYS} days to {date.today().isoformat()}."
     )
