@@ -11,7 +11,6 @@ Usage:
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 from typing import Optional
 
@@ -20,15 +19,42 @@ from .calc import calculate
 from .fomc import (
     FOMC_MEETINGS,
     get_upcoming_meetings,
+    meeting_to_contract_code,
     schedule_horizon,
     schedule_status,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
+
+# CME's free settlement feed retains roughly the last five business days, so
+# a longer history is truncated rather than fetched. Stopping after this many
+# consecutive misses ends the walk once it has fallen off that window, while
+# still stepping over a holiday sitting inside it.
+_MAX_CONSECUTIVE_MISSES = 3
 
 
 def _target_label(lower: float, upper: float) -> str:
     return f"{lower:.2f}%-{upper:.2f}%"
+
+
+def _current_range(current_rate: float) -> tuple[float, float]:
+    try:
+        return fetch_target_range()
+    except Exception:
+        # FRED's target-range series is unavailable; the EFFR always trades
+        # inside the band, so flooring it recovers the same range.
+        from .calc import current_target_range
+
+        return current_target_range(current_rate)
+
+
+def _to_percent_labels(probs: dict) -> dict:
+    """Convert bps labels (e.g. '375-400') to percentage labels."""
+    out = {}
+    for label, value in probs.items():
+        lo, hi = label.split("-")
+        out[f"{int(lo) / 100:.2f}%-{int(hi) / 100:.2f}%"] = value
+    return out
 
 
 def get_probabilities(
@@ -43,51 +69,48 @@ def get_probabilities(
             - None: all upcoming meetings
             - "next": next meeting only
             - "YYYY-MM-DD": specific meeting date
-        trade_date: Settlement date. Defaults to most recent business day.
+        trade_date: Settlement date. Defaults to the newest one CME serves.
         current_rate: EFFR override. If None, fetched from FRED.
 
     Returns:
-        Dict with current_rate info and meetings list::
+        Dict with rate context and a meetings list::
 
             {
-                "effr": 3.64,
-                "current_target": "3.50%-3.75%",
+                "effr": 3.88,
+                "current_target": "3.75%-4.00%",
+                "trade_date": "2026-09-18",
+                "schedule_status": {...},
                 "meetings": [{
-                    "date": "2026-04-29",
-                    "contract": "ZQJ6",
+                    "date": "2026-10-28",
+                    "contract": "ZQV6",
                     "probabilities": {
-                        "3.50%-3.75%": 84.0,
-                        "3.75%-4.00%": 16.0,
+                        "3.75%-4.00%": 42.4,
+                        "4.00%-4.25%": 57.6,
                     }
                 }]
             }
+
+    Raises:
+        LookupError: CME served no settlement data for the requested date.
     """
     if current_rate is None:
         current_rate = fetch_effr()
-
-    try:
-        lower, upper = fetch_target_range()
-    except Exception:
-        # Fallback: derive from EFFR
-        from .calc import current_target_range
-        lower, upper = current_target_range(current_rate)
+    lower, upper = _current_range(current_rate)
 
     settlements = get_settlements(trade_date)
-    meetings_list = get_upcoming_meetings()
-    raw = calculate(settlements, meetings_list, (lower, upper), schedule_horizon())
+    # Meetings are those upcoming as of the settlement, not as of the local
+    # clock, so an explicit --date reports the meetings that day was pricing.
+    meetings_list = get_upcoming_meetings(settlements.trade_date)
+    raw = calculate(settlements.rows, meetings_list, (lower, upper), schedule_horizon())
 
-    # Convert bps labels to percentage labels
-    meetings_out = []
-    for r in raw:
-        probs = {}
-        for k, v in r["probabilities"].items():
-            lo, hi = k.split("-")
-            probs[f"{int(lo)/100:.2f}%-{int(hi)/100:.2f}%"] = v
-        meetings_out.append({
+    meetings_out = [
+        {
             "date": r["date"],
             "contract": r["contract"],
-            "probabilities": probs,
-        })
+            "probabilities": _to_percent_labels(r["probabilities"]),
+        }
+        for r in raw
+    ]
 
     if meeting == "next":
         meetings_out = meetings_out[:1]
@@ -97,61 +120,35 @@ def get_probabilities(
     return {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
+        "trade_date": settlements.trade_date.isoformat(),
         "schedule_status": schedule_status(),
         "meetings": meetings_out,
     }
 
 
-def _snap_to_business_day(d: date) -> date:
-    """Roll back to the nearest business day."""
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
-
-
-def _fetch_snapshot(
+def _snapshot(
     trade_date: date,
     target_meeting: str,
-    meetings_list: list[date],
-    current_rate: float,
-    label: Optional[str] = None,
+    current_range: tuple[float, float],
 ) -> Optional[dict]:
-    """Fetch probability snapshot for a specific trade date."""
+    """Probabilities for one meeting as of one trade date, or None if unserved.
+
+    Only a missing settlement is swallowed. A network or parsing failure
+    propagates, so an outage cannot masquerade as a short history.
+    """
     try:
         settlements = get_settlements(trade_date)
-        raw = calculate(settlements, meetings_list, current_range, schedule_horizon())
-        for r in raw:
-            if r["date"] == target_meeting:
-                probs = _convert_prob_labels(r["probabilities"])
-                entry = {
-                    "trade_date": trade_date.isoformat(),
-                    "probabilities": probs,
-                }
-                if label:
-                    entry["label"] = label
-                return entry
-    except Exception:
+    except LookupError:
         return None
 
-
-def _convert_prob_labels(probs: dict) -> dict:
-    """Convert bps labels (e.g. '350-375') to percentage labels."""
-    out = {}
-    for k, v in probs.items():
-        lo, hi = k.split("-")
-        out[f"{int(lo)/100:.2f}%-{int(hi)/100:.2f}%"] = v
-    return out
-
-
-# Standard lookback periods: (label, approximate calendar days)
-LOOKBACK_PERIODS = [
-    ("1d", 1),
-    ("1w", 7),
-    ("1m", 30),
-    ("3m", 91),
-    ("6m", 182),
-    ("1y", 365),
-]
+    meetings_list = get_upcoming_meetings(settlements.trade_date)
+    for r in calculate(settlements.rows, meetings_list, current_range, schedule_horizon()):
+        if r["date"] == target_meeting:
+            return {
+                "trade_date": trade_date.isoformat(),
+                "probabilities": _to_percent_labels(r["probabilities"]),
+            }
+    return None
 
 
 def get_history(
@@ -159,95 +156,84 @@ def get_history(
     days: int = 10,
     current_rate: Optional[float] = None,
 ) -> dict:
-    """Get how FedWatch probabilities changed over past N business days.
-
-    Also includes standard lookback comparisons (1d, 1w, 1m, 3m, 6m, 1y).
+    """Get how FedWatch probabilities changed over past business days.
 
     Args:
         meeting: "next" (default) or "YYYY-MM-DD".
-        days: Business days of daily history.
+        days: Business days of daily history to request.
         current_rate: EFFR override.
 
     Returns:
-        Dict with daily history and lookback snapshots::
+        Dict with the daily history and how much of the request it covers::
 
             {
-                "effr": 3.64,
-                "current_target": "3.50%-3.75%",
-                "meeting_date": "2026-04-29",
-                "contract": "ZQJ6",
+                "effr": 3.88,
+                "current_target": "3.75%-4.00%",
+                "meeting_date": "2026-10-28",
+                "contract": "ZQV6",
+                "requested_days": 10,
+                "available_days": 5,
+                "note": "CME's free settlement feed served 5 of 10 ...",
                 "history": [
-                    {"trade_date": "2026-03-18", "probabilities": {...}},
-                    ...
-                ],
-                "lookback": [
-                    {"label": "1d", "trade_date": "2026-03-19", "probabilities": {...}},
-                    {"label": "1w", "trade_date": "2026-03-13", "probabilities": {...}},
+                    {"trade_date": "2026-09-14", "probabilities": {...}},
                     ...
                 ]
             }
+
+        ``note`` is present only when fewer days were served than asked
+        for. CME's free feed retains roughly the last five business days,
+        so any longer request is truncated; missing days are omitted, never
+        filled in.
     """
     if current_rate is None:
         current_rate = fetch_effr()
-
-    try:
-        lower, upper = fetch_target_range()
-    except Exception:
-        from .calc import current_target_range
-        lower, upper = current_target_range(current_rate)
+    lower, upper = _current_range(current_rate)
 
     meetings_list = get_upcoming_meetings()
-    empty = {"effr": current_rate, "current_target": _target_label(lower, upper),
-             "schedule_status": schedule_status(),
-             "meeting_date": None, "contract": None, "history": [], "lookback": []}
-    if not meetings_list:
-        return empty
-
-    target = meetings_list[0].isoformat() if (meeting is None or meeting == "next") else meeting
-
-    # Daily history
-    history = []
-    d = date.today() - timedelta(days=1)
-    collected = 0
-    while collected < days and d >= date.today() - timedelta(days=days * 2):
-        if d.weekday() >= 5:
-            d -= timedelta(days=1)
-            continue
-        snap = _fetch_snapshot(d, target, meetings_list, current_rate)
-        if snap:
-            history.append(snap)
-            collected += 1
-        d -= timedelta(days=1)
-    history.reverse()
-
-    # Lookback snapshots (1d, 1w, 1m, 3m, 6m, 1y)
-    lookback = []
-    today = date.today()
-    for label, cal_days in LOOKBACK_PERIODS:
-        ref_date = _snap_to_business_day(today - timedelta(days=cal_days))
-        snap = _fetch_snapshot(ref_date, target, meetings_list, current_rate, label=label)
-        if snap:
-            lookback.append(snap)
-
-    # Find contract code
-    contract = None
-    try:
-        for r in calculate(get_settlements(), meetings_list, current_rate):
-            if r["date"] == target:
-                contract = r["contract"]
-                break
-    except Exception:
-        pass
-
-    return {
+    result = {
         "effr": current_rate,
         "current_target": _target_label(lower, upper),
         "schedule_status": schedule_status(),
-        "meeting_date": target,
-        "contract": contract,
-        "history": history,
-        "lookback": lookback,
+        "meeting_date": None,
+        "contract": None,
+        "requested_days": days,
+        "available_days": 0,
+        "history": [],
     }
+    if not meetings_list:
+        return result
+
+    target = (
+        meetings_list[0].isoformat()
+        if meeting in (None, "next")
+        else meeting
+    )
+
+    history = []
+    day = date.today()
+    misses = 0
+    while len(history) < days and misses < _MAX_CONSECUTIVE_MISSES:
+        if day.weekday() < 5:
+            snap = _snapshot(day, target, (lower, upper))
+            if snap:
+                history.append(snap)
+                misses = 0
+            elif history:
+                misses += 1
+        day -= timedelta(days=1)
+    history.reverse()
+
+    result["meeting_date"] = target
+    result["contract"] = meeting_to_contract_code(date.fromisoformat(target))
+    result["available_days"] = len(history)
+    result["history"] = history
+    if len(history) < days:
+        result["note"] = (
+            f"CME's free settlement feed served {len(history)} of the {days} "
+            "business days requested; it retains roughly the last 5. "
+            "Missing days are omitted, not estimated."
+        )
+    return result
 
 
 # Convenience alias

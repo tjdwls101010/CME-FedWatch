@@ -23,12 +23,17 @@ def _collect_all_rates(meetings: list[dict]) -> list[str]:
 
 def _print_prob_table(result: dict) -> None:
     meetings = result["meetings"]
-    if not meetings:
-        print("No data.")
-        return
-
-    print(f"EFFR: {result['effr']:.2f}%  Target: {result['current_target']}")
+    print(
+        f"EFFR: {result['effr']:.2f}%  Target: {result['current_target']}"
+        f"  Settlement: {result['trade_date']}"
+    )
     print()
+    if not meetings:
+        print(
+            "No meetings could be priced from this settlement. The built-in "
+            "FOMC schedule may not reach far enough; see the warning below."
+        )
+        return
 
     sorted_rates = _collect_all_rates(meetings)
     header = f"{'Meeting':>12}  {'Contract':>8}"
@@ -47,44 +52,28 @@ def _print_prob_table(result: dict) -> None:
 
 def _print_history_table(result: dict) -> None:
     history = result.get("history", [])
-    lookback = result.get("lookback", [])
-    all_entries = history + lookback
-
-    if not all_entries:
-        print("No data.")
-        return
 
     print(f"EFFR: {result['effr']:.2f}%  Target: {result['current_target']}")
     print(f"Meeting: {result['meeting_date']}  Contract: {result['contract']}")
     print()
 
-    sorted_rates = _collect_all_rates_from_history(all_entries)
+    if not history:
+        print("No settlement data available for the requested window.")
+        return
+
+    sorted_rates = _collect_all_rates_from_history(history)
     header = f"{'':>12}"
     for r in sorted_rates:
         header += f"  {r:>14}"
     print(header)
     print("-" * len(header))
 
-    # Daily history
-    if history:
-        for h in history:
-            row = f"{h['trade_date']:>12}"
-            for r in sorted_rates:
-                p = h["probabilities"].get(r, 0.0)
-                row += f"  {p:>13.1f}%"
-            print(row)
-
-    # Lookback comparison
-    if lookback:
-        print()
-        print("Lookback:")
-        for h in lookback:
-            label = h.get("label", h["trade_date"])
-            row = f"{label:>12}"
-            for r in sorted_rates:
-                p = h["probabilities"].get(r, 0.0)
-                row += f"  {p:>13.1f}%"
-            print(row)
+    for h in history:
+        row = f"{h['trade_date']:>12}"
+        for r in sorted_rates:
+            p = h["probabilities"].get(r, 0.0)
+            row += f"  {p:>13.1f}%"
+        print(row)
 
 
 def _collect_all_rates_from_history(history: list[dict]) -> list[str]:
@@ -145,7 +134,11 @@ def cmd_default(args: argparse.Namespace) -> None:
     meeting = getattr(args, "meeting", None)
     trade_date = _parse_date(args.date) if args.date else None
     rate = getattr(args, "rate", None)
-    result = get_probabilities(meeting=meeting, trade_date=trade_date, current_rate=rate)
+    try:
+        result = get_probabilities(meeting=meeting, trade_date=trade_date, current_rate=rate)
+    except LookupError as exc:
+        print(f"⚠️  {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -173,6 +166,9 @@ def cmd_history(args: argparse.Namespace) -> None:
         _print_csv_history(result)
     else:
         _print_history_table(result)
+
+    if result.get("note"):
+        print(f"ℹ️  {result['note']}", file=sys.stderr)
 
     msg = _schedule_warning(result.get("schedule_status"))
     if msg:
