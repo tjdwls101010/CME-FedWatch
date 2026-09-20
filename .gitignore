@@ -6,3 +6,5 @@ build/
 *.pyc
 .eggs/
 .pytest_cache/
+.ultra-search/
+.claude/

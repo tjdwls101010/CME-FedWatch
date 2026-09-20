@@ -17,7 +17,12 @@ from typing import Optional
 
 from .api import fetch_effr, fetch_target_range, get_settlements
 from .calc import calculate
-from .fomc import FOMC_MEETINGS, get_upcoming_meetings, schedule_status
+from .fomc import (
+    FOMC_MEETINGS,
+    get_upcoming_meetings,
+    schedule_horizon,
+    schedule_status,
+)
 
 __version__ = "0.1.3"
 
@@ -69,7 +74,7 @@ def get_probabilities(
 
     settlements = get_settlements(trade_date)
     meetings_list = get_upcoming_meetings()
-    raw = calculate(settlements, meetings_list, current_rate)
+    raw = calculate(settlements, meetings_list, (lower, upper), schedule_horizon())
 
     # Convert bps labels to percentage labels
     meetings_out = []
@@ -114,7 +119,7 @@ def _fetch_snapshot(
     """Fetch probability snapshot for a specific trade date."""
     try:
         settlements = get_settlements(trade_date)
-        raw = calculate(settlements, meetings_list, current_rate)
+        raw = calculate(settlements, meetings_list, current_range, schedule_horizon())
         for r in raw:
             if r["date"] == target_meeting:
                 probs = _convert_prob_labels(r["probabilities"])
