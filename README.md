@@ -17,6 +17,11 @@ The only open-source FedWatch that **actually works out of the box**. No data pr
 
 </div>
 
+> [!WARNING]
+> **No longer maintained (October 2026).** This project is discontinued and the repository is archived; its maintainer now computes FedWatch probabilities in a private toolset.
+>
+> Versions 0.1.0–0.1.3 are yanked from PyPI because their probabilities differ from the official CME FedWatch tool (the next meeting by several percentage points, later meetings not as a cumulative distribution). 0.2.0 and 0.2.1 follow CME's published methodology and stay installable, but they get no further fixes: FOMC dates after January 2028 and any change to CME's settlement feed will not be handled.
+
 ---
 
 ## Why This Project?
